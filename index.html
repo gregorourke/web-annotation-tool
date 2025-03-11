@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Annotation Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        
+        #control-panel {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            z-index: 1000;
+        }
+        
+        #iframe-container {
+            position: absolute;
+            top: 60px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100%;
+            height: calc(100% - 60px);
+        }
+        
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        
+        .annotation-marker {
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            background-color: #ff5722;
+            border-radius: 50%;
+            color: white;
+            text-align: center;
+            line-height: 24px;
+            font-size: 12px;
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+            z-index: 1001;
+            transform: translate(-50%, -50%);
+        }
+        
+        .annotation-popup {
+            position: absolute;
+            width: 300px;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+            z-index: 1002;
+        }
+        
+        .annotation-popup textarea {
+            width: 100%;
+            height: 100px;
+            margin-bottom: 10px;
+            resize: vertical;
+        }
+        
+        .annotation-popup .buttons {
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        button {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        
+        .save-btn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        
+        .cancel-btn, .delete-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        .url-input {
+            flex-grow: 1;
+            margin-right: 10px;
+            padding: 5px;
+        }
+        
+        #annotation-overlay {
+            position: absolute;
+            top: 60px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            /* Make sure overlay receives clicks */
+            pointer-events: auto;
+            /* Make overlay transparent to see iframe content */
+            background-color: transparent;
+            z-index: 999;
+        }
+        
+        .status-message {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background-color: #333;
+            color: white;
+            border-radius: 5px;
+            z-index: 1003;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .status-message.show {
+            opacity: 1;
+        }
+        
+        .loading-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 1004;
+        }
+    </style>
+</head>
+<body>
+    <div id="control-panel">
+        <div style="display: flex; flex-grow: 1;">
+            <input type="text" id="url-input" class="url-input" placeholder="Enter website URL (e.g., https://example.com)" />
+            <button id="load-btn">Load Website</button>
+        </div>
+        <div>
+            <button id="mode-toggle">Annotation Mode: OFF</button>
+            <button id="export-btn">Export Annotations</button>
+            <button id="import-btn">Import Annotations</button>
+            <input type="file" id="import-file" style="display: none;" accept=".json" />
+        </div>
+    </div>
+    
+    <div id="iframe-container">
+        <iframe id="website-frame" src="about:blank"></iframe>
+    </div>
+    
+    <div id="annotation-overlay" style="display:none;"></div>
+    <div id="status-message" class="status-message"></div>
+    <div id="loading-indicator" class="loading-indicator" style="display:none;">Loading...</div>
+    
+    <script>
+        // Global variables
+        let annotations = [];
+        let currentPopup = null;
+        let annotationMode = false;
+        let frameLoaded = false;
+        let canAccessFrame = false;
+        let scrollOffset = { x: 0, y: 0 };
+        
+        // DOM elements
+        const urlInput = document.getElementById('url-input');
+        const loadBtn = document.getElementById('load-btn');
+        const modeToggle = document.getElementById('mode-toggle');
+        const exportBtn = document.getElementById('export-btn');
+        const importBtn = document.getElementById('import-btn');
+        const importFile = document.getElementById('import-file');
+        const websiteFrame = document.getElementById('website-frame');
+        const annotationOverlay = document.getElementById('annotation-overlay');
+        const statusMessage = document.getElementById('status-message');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        
+        // Initialize
+        function init() {
+            // Event listeners
+            loadBtn.addEventListener('click', loadWebsite);
+            modeToggle.addEventListener('click', toggleAnnotationMode);
+            annotationOverlay.addEventListener('click', handleOverlayClick);
+            exportBtn.addEventListener('click', exportAnnotations);
+            importBtn.addEventListener('click', () => importFile.click());
+            importFile.addEventListener('change', importAnnotations);
+            
+            // Handle iframe load events
+            websiteFrame.addEventListener('load', handleFrameLoad);
+            
+            // Handle window resizing
+            window.addEventListener('resize', updateAnnotationPositions);
+            
+            // Load URL from query string if present
+            const urlParams = new URLSearchParams(window.location.search);
+            const websiteUrl = urlParams.get('url');
+            if (websiteUrl) {
+                urlInput.value = websiteUrl;
+                loadWebsite();
+            }
+        }
+        
+        // Handle iframe load
+        function handleFrameLoad() {
+            frameLoaded = true;
+            loadingIndicator.style.display = 'none';
+            
+            try {
+                // Try to access iframe content
+                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                
+                // If we can access it, set up scroll tracking
+                canAccessFrame = true;
+                frameDoc.addEventListener('scroll', () => {
+                    scrollOffset = {
+                        x: frameDoc.documentElement.scrollLeft || frameDoc.body.scrollLeft,
+                        y: frameDoc.documentElement.scrollTop || frameDoc.body.scrollTop
+                    };
+                    updateAnnotationPositions();
+                });
+                
+                showStatusMessage('Website loaded successfully! Turn on annotation mode to add comments.');
+            } catch (e) {
+                // Cross-origin restrictions are in place
+                canAccessFrame = false;
+                console.log("Cross-origin restrictions detected:", e);
+                showStatusMessage('Website loaded with limited access. Annotations will use screen coordinates.');
+            }
+            
+            // Display any saved annotations
+            setTimeout(displayAnnotations, 500);
+        }
+        
+        // Toggle annotation mode
+        function toggleAnnotationMode() {
+            annotationMode = !annotationMode;
+            
+            if (annotationMode) {
+                modeToggle.textContent = 'Annotation Mode: ON';
+                modeToggle.style.backgroundColor = '#4CAF50';
+                modeToggle.style.color = 'white';
+                annotationOverlay.style.display = 'block';
+                showStatusMessage('Annotation mode activated. Click anywhere to add a comment.');
+            } else {
+                modeToggle.textContent = 'Annotation Mode: OFF';
+                modeToggle.style.backgroundColor = '';
+                modeToggle.style.color = '';
+                annotationOverlay.style.display = 'none';
+                closePopup();
+                showStatusMessage('Annotation mode deactivated.');
+            }
+        }
+        
+        // Show status message
+        function showStatusMessage(message, duration = 3000) {
+            statusMessage.textContent = message;
+            statusMessage.classList.add('show');
+            
+            setTimeout(() => {
+                statusMessage.classList.remove('show');
+            }, duration);
+        }
+        
+        // Load website in iframe
+        function loadWebsite() {
+            let url = urlInput.value.trim();
+            
+            // Add https:// if not present
+            if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+                urlInput.value = url;
+            }
+            
+            if (url) {
+                // Show loading indicator
+                loadingIndicator.style.display = 'block';
+                frameLoaded = false;
+                
+                // Load the website
+                websiteFrame.src = url;
+                
+                // Update URL without reloading page
+                const newUrl = new URL(window.location);
+                newUrl.searchParams.set('url', url);
+                window.history.pushState({}, '', newUrl);
+                
+                // Clear existing annotations
+                clearAnnotations();
+                
+                // Load annotations for this URL
+                loadAnnotations(url);
+                
+                // Turn off annotation mode when loading new site
+                if (annotationMode) {
+                    toggleAnnotationMode();
+                }
+                
+                showStatusMessage('Loading website...');
+                
+                // Set a timeout to handle cases where the load event doesn't fire
+                setTimeout(() => {
+                    if (!frameLoaded) {
+                        loadingIndicator.style.display = 'none';
+                        showStatusMessage('Website loading timed out. It may be blocked from loading in an iframe.');
+                    }
+                }, 15000);
+            } else {
+                alert('Please enter a valid URL');
+            }
+        }
+        
+        // Generate a unique path for an element
+        function getElementPath(element) {
+            if (!element) return null;
+            
+            try {
+                // Try to get element XPath
+                const path = [];
+                let currentNode = element;
+                
+                while (currentNode && currentNode.nodeType === Node.ELEMENT_NODE) {
+                    let selector = currentNode.nodeName.toLowerCase();
+                    
+                    if (currentNode.id) {
+                        selector += '#' + currentNode.id;
+                        path.unshift(selector);
+                        break;
+                    } else {
+                        let sibling = currentNode.previousSibling;
+                        let siblingCount = 1;
+                        
+                        while (sibling) {
+                            if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === currentNode.nodeName) {
+                                siblingCount++;
+                            }
+                            sibling = sibling.previousSibling;
+                        }
+                        
+                        selector += ':nth-child(' + siblingCount + ')';
+                    }
+                    
+                    path.unshift(selector);
+                    currentNode = currentNode.parentNode;
+                }
+                
+                return path.join(' > ');
+            } catch (e) {
+                console.error("Error getting element path:", e);
+                return null;
+            }
+        }
+        
+        // Handle click on overlay to add annotation
+        function handleOverlayClick(event) {
+            // Don't create annotation if clicking on existing marker or popup
+            if (event.target.closest('.annotation-marker') || event.target.closest('.annotation-popup')) {
+                return;
+            }
+            
+            // Only process clicks if annotation mode is on
+            if (!annotationMode) return;
+            
+            const x = event.clientX;
+            const y = event.clientY;
+            
+            // Calculate iframe-relative coordinates
+            const iframeRect = websiteFrame.getBoundingClientRect();
+            const relX = x - iframeRect.left;
+            const relY = y - iframeRect.top;
+            
+            let elementInfo = null;
+            
+            // Try to get element info if we can access the frame
+            if (canAccessFrame) {
+                try {
+                    const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                    const element = frameDoc.elementFromPoint(relX, relY);
+                    
+                    if (element) {
+                        elementInfo = {
+                            path: getElementPath(element),
+                            tagName: element.tagName,
+                            className: element.className,
+                            id: element.id,
+                            text: element.textContent?.substring(0, 50),
+                            relativeX: relX + scrollOffset.x,
+                            relativeY: relY + scrollOffset.y
+                        };
+                    }
+                } catch (e) {
+                    console.error("Error getting element info:", e);
+                }
+            }
+            
+            // Close any open popup
+            closePopup();
+            
+            // Create new annotation popup
+            createAnnotationPopup(x, y, null, elementInfo);
+        }
+        
+        // Create annotation popup
+        function createAnnotationPopup(x, y, annotationId = null, elementInfo = null) {
+            closePopup();
+            
+            const popup = document.createElement('div');
+            popup.className = 'annotation-popup';
+            popup.style.left = `${x + 20}px`;
+            popup.style.top = `${y + 20}px`;
+            
+            let annotation = null;
+            if (annotationId !== null) {
+                annotation = annotations.find(a => a.id === annotationId);
+            }
+            
+            popup.innerHTML = `
+                <textarea placeholder="Enter your comment here...">${annotation ? annotation.text : ''}</textarea>
+                <div class="buttons">
+                    <button class="save-btn">Save</button>
+                    <button class="cancel-btn">Cancel</button>
+                    ${annotation ? '<button class="delete-btn">Delete</button>' : ''}
+                </div>
+            `;
+            
+            // Add event listeners
+            popup.querySelector('.save-btn').addEventListener('click', () => {
+                const text = popup.querySelector('textarea').value.trim();
+                
+                if (text) {
+                    if (annotationId === null) {
+                        // New annotation
+                        const newAnnotation = {
+                            id: Date.now().toString(),
+                            x: x,
+                            y: y,
+                            text: text,
+                            elementInfo: elementInfo,
+                            createdAt: new Date().toISOString()
+                        };
+                        
+                        annotations.push(newAnnotation);
+                        createAnnotationMarker(newAnnotation);
+                        showStatusMessage('Annotation saved!');
+                    } else if (annotation) {
+                        // Update existing annotation
+                        annotation.text = text;
+                        annotation.updatedAt = new Date().toISOString();
+                        showStatusMessage('Annotation updated!');
+                    }
+                    
+                    // Save annotations
+                    saveAnnotations();
+                }
+                
+                closePopup();
+            });
+            
+            popup.querySelector('.cancel-btn').addEventListener('click', closePopup);
+            
+            if (annotation) {
+                popup.querySelector('.delete-btn').addEventListener('click', () => {
+                    const index = annotations.findIndex(a => a.id === annotationId);
+                    if (index !== -1) {
+                        annotations.splice(index, 1);
+                        
+                        // Remove marker
+                        const marker = document.querySelector(`.annotation-marker[data-id="${annotationId}"]`);
+                        if (marker) {
+                            marker.remove();
+                        }
+                        
+                        // Save annotations
+                        saveAnnotations();
+                        showStatusMessage('Annotation deleted!');
+                    }
+                    
+                    closePopup();
+                });
+            }
+            
+            annotationOverlay.appendChild(popup);
+            currentPopup = popup;
+            
+            // Focus the textarea
+            popup.querySelector('textarea').focus();
+        }
+        
+        // Close any open popup
+        function closePopup() {
+            if (currentPopup) {
+                currentPopup.remove();
+                currentPopup = null;
+            }
+        }
+        
+        // Create annotation marker
+        function createAnnotationMarker(annotation) {
+            const marker = document.createElement('div');
+            marker.className = 'annotation-marker';
+            marker.style.left = `${annotation.x}px`;
+            marker.style.top = `${annotation.y}px`;
+            marker.dataset.id = annotation.id;
+            
+            // Store original coordinates for repositioning
+            marker.dataset.originalX = annotation.x;
+            marker.dataset.originalY = annotation.y;
+            
+            // Store element path if available
+            if (annotation.elementInfo && annotation.elementInfo.path) {
+                marker.dataset.elementPath = annotation.elementInfo.path;
+            }
+            
+            // Find number for this marker
+            const markerNumber = annotations.findIndex(a => a.id === annotation.id) + 1;
+            marker.textContent = markerNumber;
+            
+            // Handle click on marker
+            marker.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Only show popup when in annotation mode
+                if (annotationMode) {
+                    createAnnotationPopup(annotation.x, annotation.y, annotation.id);
+                }
+            });
+            
+            annotationOverlay.appendChild(marker);
+        }
+        
+        // Update positions of all annotation markers
+        function updateAnnotationPositions() {
+            if (!canAccessFrame) return;
+            
+            try {
+                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                const iframeRect = websiteFrame.getBoundingClientRect();
+                
+                document.querySelectorAll('.annotation-marker').forEach(marker => {
+                    const elementPath = marker.dataset.elementPath;
+                    
+                    if (elementPath) {
+                        // Try to find the element using the path
+                        const element = frameDoc.querySelector(elementPath);
+                        
+                        if (element) {
+                            // Element found, update position
+                            const rect = element.getBoundingClientRect();
+                            marker.style.left = `${rect.left + (rect.width / 2) + iframeRect.left}px`;
+                            marker.style.top = `${rect.top + (rect.height / 2) + iframeRect.top}px`;
+                            marker.style.display = 'block';
+                        } else {
+                            // Element not found (might be scrolled out of view)
+                            marker.style.display = 'none';
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Error updating annotation positions:", e);
+            }
+        }
+        
+        // Display all annotations
+        function displayAnnotations() {
+            // Clear existing markers first
+            const markers = document.querySelectorAll('.annotation-marker');
+            markers.forEach(marker => marker.remove());
+            
+            // Create markers for all annotations
+            annotations.forEach(createAnnotationMarker);
+            
+            if (annotations.length > 0) {
+                showStatusMessage(`Loaded ${annotations.length} annotations`, 2000);
+            }
+        }
+        
+        // Clear all annotations from display
+        function clearAnnotations() {
+            const markers = document.querySelectorAll('.annotation-marker');
+            markers.forEach(marker => marker.remove());
+            
+            closePopup();
+            annotations = [];
+        }
+        
+        // Save annotations to localStorage
+        function saveAnnotations() {
+            const url = urlInput.value.trim();
+            if (url) {
+                localStorage.setItem(`web-annotations-${url}`, JSON.stringify(annotations));
+            }
+        }
+        
+        // Load annotations from localStorage
+        function loadAnnotations(url) {
+            const savedAnnotations = localStorage.getItem(`web-annotations-${url}`);
+            if (savedAnnotations) {
+                try {
+                    annotations = JSON.parse(savedAnnotations);
+                } catch (error) {
+                    console.error('Error loading annotations:', error);
+                }
+            }
+        }
+        
+        // Export annotations
+        function exportAnnotations() {
+            if (annotations.length === 0) {
+                alert('No annotations to export');
+                return;
+            }
+            
+            const url = urlInput.value.trim();
+            const dataStr = JSON.stringify({
+                url: url,
+                annotations: annotations
+            });
+            const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+            
+            const exportName = `annotations-${new URL(url).hostname}-${new Date().toISOString().slice(0, 10)}.json`;
+            
+            const downloadLink = document.createElement('a');
+            downloadLink.setAttribute('href', dataUri);
+            downloadLink.setAttribute('download', exportName);
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            
+            showStatusMessage(`Exported ${annotations.length} annotations`);
+        }
+        
+        // Import annotations
+        function importAnnotations(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    
+                    if (data.url && data.annotations) {
+                        // If URL is different, ask user if they want to load the website
+                        const currentUrl = urlInput.value.trim();
+                        if (currentUrl !== data.url) {
+                            const loadWebsiteConfirm = confirm(`The annotations are for ${data.url}. Do you want to load this website?`);
+                            if (loadWebsiteConfirm) {
+                                urlInput.value = data.url;
+                                loadWebsite();
+                                return;
+                            }
+                        }
+                        
+                        // Clear existing annotations
+                        clearAnnotations();
+                        
+                        // Load imported annotations
+                        annotations = data.annotations;
+                        
+                        // Display annotations
+                        displayAnnotations();
+                        
+                        // Save to localStorage
+                        saveAnnotations();
+                        
+                        showStatusMessage(`Imported ${annotations.length} annotations successfully!`);
+                    } else {
+                        alert('Invalid annotation file format');
+                    }
+                } catch (error) {
+                    alert('Error importing annotations: ' + error.message);
+                }
+            };
+            
+            reader.readAsText(file);
+            
+            // Reset file input
+            event.target.value = '';
+        }
+        
+        // Initialize on load
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
