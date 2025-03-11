@@ -143,6 +143,31 @@
             border-radius: 10px;
             z-index: 1004;
         }
+        
+        .iframe-cover {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            z-index: 998;
+        }
+        
+        .debug-panel {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px;
+            font-size: 10px;
+            z-index: 1004;
+            max-width: 300px;
+            max-height: 100px;
+            overflow: auto;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -166,6 +191,7 @@
     <div id="annotation-overlay" style="display:none;"></div>
     <div id="status-message" class="status-message"></div>
     <div id="loading-indicator" class="loading-indicator" style="display:none;">Loading...</div>
+    <div id="debug-panel" class="debug-panel"></div>
     
     <script>
         // Global variables
@@ -174,7 +200,6 @@
         let annotationMode = false;
         let frameLoaded = false;
         let canAccessFrame = false;
-        let scrollOffset = { x: 0, y: 0 };
         
         // DOM elements
         const urlInput = document.getElementById('url-input');
@@ -187,6 +212,26 @@
         const annotationOverlay = document.getElementById('annotation-overlay');
         const statusMessage = document.getElementById('status-message');
         const loadingIndicator = document.getElementById('loading-indicator');
+        const debugPanel = document.getElementById('debug-panel');
+        
+        // Debug function
+        function debug(message) {
+            console.log(message);
+            if (debugPanel.style.display === 'block') {
+                debugPanel.innerHTML += message + '<br>';
+                debugPanel.scrollTop = debugPanel.scrollHeight;
+            }
+        }
+        
+        // Enable debug mode with key combo Ctrl+Shift+D
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+                debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+                if (debugPanel.style.display === 'block') {
+                    debug('Debug mode enabled');
+                }
+            }
+        });
         
         // Initialize
         function init() {
@@ -201,7 +246,7 @@
             // Handle iframe load events
             websiteFrame.addEventListener('load', handleFrameLoad);
             
-            // Handle window resizing
+            // Handle window resizing and scrolling
             window.addEventListener('resize', updateAnnotationPositions);
             
             // Load URL from query string if present
@@ -210,6 +255,85 @@
             if (websiteUrl) {
                 urlInput.value = websiteUrl;
                 loadWebsite();
+            }
+        }
+        
+        // Generate a unique CSS selector for an element
+        function generateCssSelector(element) {
+            if (!element || element.nodeType !== 1) {
+                return null;
+            }
+            
+            // Try ID first
+            if (element.id) {
+                return '#' + CSS.escape(element.id);
+            }
+            
+            // Try tag name with classes
+            if (element.classList && element.classList.length > 0) {
+                const classes = Array.from(element.classList).map(c => '.' + CSS.escape(c)).join('');
+                const selector = element.tagName.toLowerCase() + classes;
+                
+                // Check if this selector is unique
+                try {
+                    const doc = element.ownerDocument;
+                    const matches = doc.querySelectorAll(selector);
+                    if (matches.length === 1) {
+                        return selector;
+                    }
+                } catch(e) {}
+            }
+            
+            // Try with parent context
+            const parent = element.parentElement;
+            if (!parent) {
+                return element.tagName.toLowerCase();
+            }
+            
+            // Find position among siblings
+            const siblings = Array.from(parent.children).filter(child => 
+                child.tagName === element.tagName
+            );
+            
+            if (siblings.length === 1) {
+                return generateCssSelector(parent) + ' > ' + element.tagName.toLowerCase();
+            }
+            
+            // Use nth-child
+            const index = Array.from(parent.children).indexOf(element) + 1;
+            return generateCssSelector(parent) + ' > ' + element.tagName.toLowerCase() + ':nth-child(' + index + ')';
+        }
+        
+        // Set up mutation observer to handle DOM changes
+        function setupMutationObserver() {
+            if (!canAccessFrame) return;
+            
+            try {
+                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                
+                // Create an observer instance
+                const observer = new MutationObserver((mutations) => {
+                    // Update annotation positions when DOM changes
+                    updateAnnotationPositions();
+                });
+                
+                // Configure and start the observer
+                observer.observe(frameDoc.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    characterData: false
+                });
+                
+                debug('Mutation observer set up');
+                
+                // Also handle scroll events
+                frameDoc.addEventListener('scroll', () => {
+                    requestAnimationFrame(updateAnnotationPositions);
+                });
+                
+            } catch (e) {
+                debug('Error setting up mutation observer: ' + e.message);
             }
         }
         
@@ -222,22 +346,27 @@
                 // Try to access iframe content
                 const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
                 
-                // If we can access it, set up scroll tracking
+                // If we reached here, we can access the iframe content
                 canAccessFrame = true;
-                frameDoc.addEventListener('scroll', () => {
-                    scrollOffset = {
-                        x: frameDoc.documentElement.scrollLeft || frameDoc.body.scrollLeft,
-                        y: frameDoc.documentElement.scrollTop || frameDoc.body.scrollTop
-                    };
-                    updateAnnotationPositions();
-                });
+                debug('Can access frame content: YES');
+                
+                // Insert a transparent cover over the iframe to prevent clicks going through
+                const cover = document.createElement('div');
+                cover.className = 'iframe-cover';
+                cover.id = 'iframe-cover';
+                
+                // Add iframe cover for capturing events
+                websiteFrame.parentNode.insertBefore(cover, websiteFrame.nextSibling);
+                
+                // Set up mutation observer
+                setupMutationObserver();
                 
                 showStatusMessage('Website loaded successfully! Turn on annotation mode to add comments.');
             } catch (e) {
                 // Cross-origin restrictions are in place
                 canAccessFrame = false;
-                console.log("Cross-origin restrictions detected:", e);
-                showStatusMessage('Website loaded with limited access. Annotations will use screen coordinates.');
+                debug('Can access frame content: NO - ' + e.message);
+                showStatusMessage('Website loaded with limited access. Annotations will use viewport coordinates.');
             }
             
             // Display any saved annotations
@@ -274,7 +403,7 @@
             }, duration);
         }
         
-        // Load website in iframe
+        // Load website in iframe with CORS proxy if needed
         function loadWebsite() {
             let url = urlInput.value.trim();
             
@@ -289,7 +418,7 @@
                 loadingIndicator.style.display = 'block';
                 frameLoaded = false;
                 
-                // Load the website
+                // Try loading the website directly first
                 websiteFrame.src = url;
                 
                 // Update URL without reloading page
@@ -322,43 +451,22 @@
             }
         }
         
-        // Generate a unique path for an element
-        function getElementPath(element) {
-            if (!element) return null;
+        // Get element at point in iframe
+        function getElementAtPoint(x, y) {
+            if (!canAccessFrame) return null;
             
             try {
-                // Try to get element XPath
-                const path = [];
-                let currentNode = element;
+                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                const frameRect = websiteFrame.getBoundingClientRect();
                 
-                while (currentNode && currentNode.nodeType === Node.ELEMENT_NODE) {
-                    let selector = currentNode.nodeName.toLowerCase();
-                    
-                    if (currentNode.id) {
-                        selector += '#' + currentNode.id;
-                        path.unshift(selector);
-                        break;
-                    } else {
-                        let sibling = currentNode.previousSibling;
-                        let siblingCount = 1;
-                        
-                        while (sibling) {
-                            if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === currentNode.nodeName) {
-                                siblingCount++;
-                            }
-                            sibling = sibling.previousSibling;
-                        }
-                        
-                        selector += ':nth-child(' + siblingCount + ')';
-                    }
-                    
-                    path.unshift(selector);
-                    currentNode = currentNode.parentNode;
-                }
+                // Calculate position relative to iframe
+                const relX = x - frameRect.left;
+                const relY = y - frameRect.top;
                 
-                return path.join(' > ');
+                // Get element at point
+                return frameDoc.elementFromPoint(relX, relY);
             } catch (e) {
-                console.error("Error getting element path:", e);
+                debug('Error getting element at point: ' + e.message);
                 return null;
             }
         }
@@ -376,32 +484,37 @@
             const x = event.clientX;
             const y = event.clientY;
             
-            // Calculate iframe-relative coordinates
-            const iframeRect = websiteFrame.getBoundingClientRect();
-            const relX = x - iframeRect.left;
-            const relY = y - iframeRect.top;
+            // Try to find the element at this position
+            const element = getElementAtPoint(x, y);
             
             let elementInfo = null;
             
-            // Try to get element info if we can access the frame
-            if (canAccessFrame) {
-                try {
-                    const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
-                    const element = frameDoc.elementFromPoint(relX, relY);
+            if (element) {
+                // We found an element, generate a CSS selector for it
+                const selector = generateCssSelector(element);
+                
+                if (selector) {
+                    // Get element position data
+                    const rect = element.getBoundingClientRect();
+                    const frameRect = websiteFrame.getBoundingClientRect();
                     
-                    if (element) {
-                        elementInfo = {
-                            path: getElementPath(element),
-                            tagName: element.tagName,
-                            className: element.className,
-                            id: element.id,
-                            text: element.textContent?.substring(0, 50),
-                            relativeX: relX + scrollOffset.x,
-                            relativeY: relY + scrollOffset.y
-                        };
-                    }
-                } catch (e) {
-                    console.error("Error getting element info:", e);
+                    elementInfo = {
+                        selector: selector,
+                        tagName: element.tagName,
+                        classes: element.className,
+                        id: element.id,
+                        text: element.textContent ? element.textContent.substring(0, 50) : '',
+                        boundingRect: {
+                            x: rect.left + frameRect.left,
+                            y: rect.top + frameRect.top,
+                            width: rect.width,
+                            height: rect.height,
+                            centerX: rect.left + rect.width/2 + frameRect.left,
+                            centerY: rect.top + rect.height/2 + frameRect.top
+                        }
+                    };
+                    
+                    debug('Element found: ' + selector);
                 }
             }
             
@@ -491,7 +604,7 @@
                 });
             }
             
-            annotationOverlay.appendChild(popup);
+            document.body.appendChild(popup);
             currentPopup = popup;
             
             // Focus the textarea
@@ -510,17 +623,25 @@
         function createAnnotationMarker(annotation) {
             const marker = document.createElement('div');
             marker.className = 'annotation-marker';
-            marker.style.left = `${annotation.x}px`;
-            marker.style.top = `${annotation.y}px`;
             marker.dataset.id = annotation.id;
             
-            // Store original coordinates for repositioning
-            marker.dataset.originalX = annotation.x;
-            marker.dataset.originalY = annotation.y;
-            
-            // Store element path if available
-            if (annotation.elementInfo && annotation.elementInfo.path) {
-                marker.dataset.elementPath = annotation.elementInfo.path;
+            // Position marker based on element info if available
+            if (annotation.elementInfo && annotation.elementInfo.selector) {
+                marker.dataset.selector = annotation.elementInfo.selector;
+                
+                if (annotation.elementInfo.boundingRect) {
+                    // If we have element rect info, use the center
+                    marker.style.left = `${annotation.elementInfo.boundingRect.centerX}px`;
+                    marker.style.top = `${annotation.elementInfo.boundingRect.centerY}px`;
+                } else {
+                    // Fall back to original click coordinates
+                    marker.style.left = `${annotation.x}px`;
+                    marker.style.top = `${annotation.y}px`;
+                }
+            } else {
+                // No element info, use click coordinates
+                marker.style.left = `${annotation.x}px`;
+                marker.style.top = `${annotation.y}px`;
             }
             
             // Find number for this marker
@@ -532,11 +653,47 @@
                 e.stopPropagation();
                 // Only show popup when in annotation mode
                 if (annotationMode) {
-                    createAnnotationPopup(annotation.x, annotation.y, annotation.id);
+                    const x = parseInt(marker.style.left);
+                    const y = parseInt(marker.style.top);
+                    createAnnotationPopup(x, y, annotation.id);
                 }
             });
             
-            annotationOverlay.appendChild(marker);
+            document.body.appendChild(marker);
+            
+            // Update position if it's an element-based annotation
+            if (annotation.elementInfo && annotation.elementInfo.selector) {
+                updateMarkerPosition(marker, annotation.elementInfo.selector);
+            }
+        }
+        
+        // Update the position of a specific marker
+        function updateMarkerPosition(marker, selector) {
+            if (!canAccessFrame) return;
+            
+            try {
+                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
+                const element = frameDoc.querySelector(selector);
+                
+                if (element) {
+                    const rect = element.getBoundingClientRect();
+                    const frameRect = websiteFrame.getBoundingClientRect();
+                    
+                    // Position at the center of the element
+                    marker.style.left = `${rect.left + rect.width/2 + frameRect.left}px`;
+                    marker.style.top = `${rect.top + rect.height/2 + frameRect.top}px`;
+                    marker.style.display = 'block';
+                    
+                    return true;
+                } else {
+                    // Element not found, hide the marker
+                    marker.style.display = 'none';
+                    return false;
+                }
+            } catch (e) {
+                debug('Error updating marker position: ' + e.message);
+                return false;
+            }
         }
         
         // Update positions of all annotation markers
@@ -544,30 +701,17 @@
             if (!canAccessFrame) return;
             
             try {
-                const frameDoc = websiteFrame.contentDocument || websiteFrame.contentWindow.document;
-                const iframeRect = websiteFrame.getBoundingClientRect();
+                // Get all markers with selectors
+                const markers = document.querySelectorAll('.annotation-marker[data-selector]');
                 
-                document.querySelectorAll('.annotation-marker').forEach(marker => {
-                    const elementPath = marker.dataset.elementPath;
-                    
-                    if (elementPath) {
-                        // Try to find the element using the path
-                        const element = frameDoc.querySelector(elementPath);
-                        
-                        if (element) {
-                            // Element found, update position
-                            const rect = element.getBoundingClientRect();
-                            marker.style.left = `${rect.left + (rect.width / 2) + iframeRect.left}px`;
-                            marker.style.top = `${rect.top + (rect.height / 2) + iframeRect.top}px`;
-                            marker.style.display = 'block';
-                        } else {
-                            // Element not found (might be scrolled out of view)
-                            marker.style.display = 'none';
-                        }
+                markers.forEach(marker => {
+                    const selector = marker.dataset.selector;
+                    if (selector) {
+                        updateMarkerPosition(marker, selector);
                     }
                 });
             } catch (e) {
-                console.error("Error updating annotation positions:", e);
+                debug('Error updating annotation positions: ' + e.message);
             }
         }
         
@@ -669,7 +813,7 @@
                         annotations = data.annotations;
                         
                         // Display annotations
-                        displayAnnotations();
+                        setTimeout(displayAnnotations, 500);
                         
                         // Save to localStorage
                         saveAnnotations();
